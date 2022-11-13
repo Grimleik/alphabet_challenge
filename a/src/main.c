@@ -9,7 +9,7 @@
 #include <time.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
+#include "../../shared/stb_truetype.h"
 
 /* TODO:
  * Bullets!
