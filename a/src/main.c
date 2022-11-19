@@ -11,17 +11,25 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../../shared/stb_truetype.h"
 
-/* TODO:
- * Bullets!
- * AliEnZ!
+/* Potential TODOS
+ * AlienZ.
+ * Powerups.
+ * Performance Checks, we have some bad code atm (rendering spec.).
+ * Transition from Programatic Art to 'Prettier' Programatic Art ?
  */
 
-#define ASSERT(x) if(!(x))                      \
-    {                                           \
-        DebugBreak();                           \
-    }                                           \
+#define ASSERT(x)     \
+    if (!(x))         \
+    {                 \
+        DebugBreak(); \
+        int a = 5;    \
+    }
 
-#define INVALID_DEFAULT_CASE default: { ASSERT(1); }
+#define INVALID_DEFAULT_CASE \
+    default:                 \
+    {                        \
+        ASSERT(0);           \
+    }
 #undef RGB
 #define RGB(r, g, b) (u32)((r) << 16 | (g) << 8 | (b))
 enum KEY_STATE
@@ -32,19 +40,19 @@ enum KEY_STATE
 
 enum GAME_STATE
 {
-    MENU,
-    GAME_SETUP,
-    GAME,
-    PAUSED,
-    GAME_OVER,
+    GS_MENU,
+    GS_GAME_SETUP,
+    GS_GAME,
+    GS_PAUSED,
+    GS_GAME_OVER,
 };
 
 enum COLLISION_TYPE
 {
-    BULLET = 0x0,
-    PLAYER = 0x1,
-    ASTEROID = 0x2,
-    ALIEN = 0x4,
+    BULLET = 0x1,
+    PLAYER = 0x2,
+    ASTEROID = 0x4,
+    ALIEN = 0x8,
 };
 
 typedef struct KeyState
@@ -62,17 +70,33 @@ typedef struct RenderBuffer
     BITMAPINFO bitsInfo;
 } RenderBuffer;
 
+typedef enum AsteroidStage
+{
+    AS_BIG,
+    AS_SMALL
+} AsteroidStage;
+
 typedef struct Entity
 {
+    // SHARED:
     v2f pos;
     v2f dP;
-    v2f dim;
+    v2f dir;
+    v2f halfDim;
     u32 color;
 
     u32 collisionMask;
     u32 collisionType;
+
+    // SPECIFICS:
     u32 health;
-    
+    f32 maxVel;
+    union
+    {
+        f32 lifeTime_u;
+        f32 invulnearableTimer_u;
+    };
+    u32 stage;
     struct Entity *next;
     struct Entity *prev;
 } Entity;
@@ -92,9 +116,8 @@ typedef struct GameState
     v2s screenDim;
     HWND hwnd;
     u8 mode;
-    b32 isPaused;
     u32 score;
-        
+
     f32 shootingDelay;
     f32 maxShootingDelay;
 
@@ -106,16 +129,23 @@ typedef struct GameState
 struct KeyState keyStates[0xFE];
 #define ENTITY_COUNT 256
 
-
-inline f32 RandomNormalized()
+// 0, 1
+inline f32 RandomNormalized01()
 {
     return (f32)(rand()) / RAND_MAX;
 }
 
-#define RANDOM_BETWEEN(name, type)                               \
-    inline type Random##name##Between(type min, type max)        \
-    {                                                           \
-        return (RandomNormalized() * (max - min)) + min;       \
+// -1 . 1
+inline f32 RandomNormalized()
+{
+    f32 result = RandomNormalized01();
+    return (result * 2) - 1;
+}
+
+#define RANDOM_BETWEEN(name, type)                         \
+    inline type Random##name##Between(type min, type max)  \
+    {                                                      \
+        return (RandomNormalized01() * (max - min)) + min; \
     }
 
 // NOTE(pf): CBA To create a bunch of math util functions atm, just
@@ -124,52 +154,33 @@ inline f32 RandomNormalized()
 RANDOM_BETWEEN(F32, f32)
 // RANDOM_BETWEEN(V2f, v2f) NOTE: No operator overloading ):
 
-inline v2f RandomV2fBetween(v2f min, v2f max)
-{
-    v2f s0 = v2fSub(max, min);
-    v2f s1 = v2fAdd(s0, min);
-    v2f s2 = {RandomNormalized() * 2.0f - 1.0f, RandomNormalized() * 2.0f - 1.0f};
-    // v2fNormalize(&s2);
-    v2f result = v2fHadamard(s2, s1);
-    return result;
-}
-
-// TODO: Test default args.
 inline u32 RandomColorBetween(u8 minR, u8 minG, u8 minB,
                               u8 maxR, u8 maxG, u8 maxB)
 {
-    u8 r = (u8)(RandomNormalized() * (maxR - minR)) + minR;
-    u8 g = (u8)(RandomNormalized() * (maxG - minG)) + minG;
-    u8 b = (u8)(RandomNormalized() * (maxB - minB)) + minB;
+    u8 r = (u8)(RandomNormalized01() * (maxR - minR)) + minR;
+    u8 g = (u8)(RandomNormalized01() * (maxG - minG)) + minG;
+    u8 b = (u8)(RandomNormalized01() * (maxB - minB)) + minB;
     u32 result = r << 16 | g << 8 | b;
     return result;
 }
 
-inline v2f RandomPositionBetween(v2f minP, v2f maxP)
+inline v2f RandomV2fBetween(v2f minP, v2f maxP)
 {
     v2f result;
-    result.x = RandomNormalized() * (maxP.x - minP.x) + minP.x;
-    result.y = RandomNormalized() * (maxP.y - minP.y) + minP.y;
-    return result;
-}
-
-inline v2f RandomDimensionBetween(v2f minP, v2f maxP)
-{
-    v2f result;
-    result.x = RandomNormalized() * (maxP.x - minP.x) + minP.x;
-    result.y = RandomNormalized() * (maxP.y - minP.y) + minP.y;
+    result.x = RandomNormalized01() * (maxP.x - minP.x) + minP.x;
+    result.y = RandomNormalized01() * (maxP.y - minP.y) + minP.y;
     return result;
 }
 
 static Entity *EntityCreate(GameState *gameState, u32 color, v2f pos, v2f dim,
-                            u32 collisionMask, u32 collisionType)
+                            u32 collisionMask, u32 collisionType, f32 maxVel)
 {
     Entity *result;
-    if(gameState->freeList)
+    if (gameState->freeList)
     {
         result = gameState->freeList;
         gameState->freeList = gameState->freeList->next;
-        if(gameState->freeList)
+        if (gameState->freeList)
             gameState->freeList->prev = result->prev;
     }
     else
@@ -177,45 +188,71 @@ static Entity *EntityCreate(GameState *gameState, u32 color, v2f pos, v2f dim,
         ASSERT(gameState->entityCount < ENTITY_COUNT);
         result = gameState->entityList + gameState->entityCount++;
     }
-    
+
     result->color = color;
     result->pos = pos;
     result->dP.x = 0.0f;
     result->dP.y = 0.0f;
-    result->dim = dim;
+    result->halfDim = dim;
     result->collisionMask = collisionMask;
     result->collisionType = collisionType;
-    result->health = 1;
+    result->health = collisionType == PLAYER ? 3 : 1;
     result->prev = result->next = 0;
+    result->dir.x = 1.0f;
+    result->dir.y = 0.0f;
+    result->maxVel = maxVel;
+    result->stage = 0;
+    if (collisionType == BULLET)
+    {
+        result->lifeTime_u = 1.0f;
+    }
 
-    if(gameState->activeEntityList)
+    if (gameState->activeEntityList)
     {
         // result->prev = gameState->activeEntityList->prev;
         result->next = gameState->activeEntityList;
         gameState->activeEntityList->prev = result;
     }
-    
+
     gameState->activeEntityList = result;
+    return result;
+}
+
+static Entity *AsteroidCreate(GameState *gameState, v2f pos, v2f halfDim, AsteroidStage stage)
+{
+    Entity *result = EntityCreate(gameState, RGB(40, 40, 40), pos, halfDim, BULLET, ASTEROID, 5.0f);
+    v2f minVel = {-2.f, -2.f};
+    v2f maxVel = {2.0f, 2.0f};
+    result->dP = RandomV2fBetween(minVel, maxVel);
+    result->stage = stage;
+    gameState->asteroidCount++;
+    return result;
+}
+
+static Entity *PlayerCreate(GameState *gameState, v2f pos)
+{
+    const v2f playerDim = {15, 15};
+    Entity *result = EntityCreate(gameState, RGB(255, 255, 255), pos, playerDim, ASTEROID | ALIEN, PLAYER, 8.f);
     return result;
 }
 
 // TODO: This needs another pass.
 static void EntityFree(Entity *entity, GameState *gameState)
 {
-    if(gameState->activeEntityList == entity)
+    if (gameState->activeEntityList == entity)
     {
         gameState->activeEntityList = entity->next;
     }
     else
     {
         ASSERT(entity->next || entity->prev);
-        if(entity->next)
+        if (entity->next)
             entity->next->prev = entity->prev;
-        if(entity->prev)
+        if (entity->prev)
             entity->prev->next = entity->next;
     }
-    
-    if(gameState->freeList)
+
+    if (gameState->freeList)
     {
         entity->next = gameState->freeList->next;
         entity->prev = gameState->freeList->prev;
@@ -231,20 +268,20 @@ static void EntityFree(Entity *entity, GameState *gameState)
 inline b32 EntityCollidesWith(Entity *a, Entity *b)
 {
     b32 result = 0;
-    if(a->collisionMask & b->collisionType)
+    if (a->collisionMask & b->collisionType)
     {
         v2f pos = v2fSub(b->pos, a->pos);
         v2f minkowskiDim;
-        minkowskiDim.x = (a->dim.x + b->dim.x) / 2;
-        minkowskiDim.y = (a->dim.y + b->dim.y) / 2;
-        
-        if(pos.x >= -minkowskiDim.x && pos.x < minkowskiDim.x &&
-           pos.y >= -minkowskiDim.y && pos.y < minkowskiDim.y)
+        minkowskiDim.x = (a->halfDim.x + b->halfDim.x);
+        minkowskiDim.y = (a->halfDim.y + b->halfDim.y);
+
+        if (pos.x >= -minkowskiDim.x && pos.x < minkowskiDim.x &&
+            pos.y >= -minkowskiDim.y && pos.y < minkowskiDim.y)
         {
             result = 1;
         }
     }
-    
+
     return result;
 }
 
@@ -272,12 +309,11 @@ static void EntityWrapToWorld(Entity *entity, s32 minX, s32 minY, s32 maxX, s32 
 static Entity *EntityCollidesWithAnything(Entity *entity, Entity *entityList)
 {
     Entity *result = 0;
-    for(Entity *collider = entityList;
-        collider;
-        collider = collider->next)
+    for (Entity *collider = entityList;
+         collider;
+         collider = collider->next)
     {
-        if(entity != collider &&
-           EntityCollidesWith(entity, collider))
+        if (entity != collider && EntityCollidesWith(entity, collider))
         {
             result = collider;
             break;
@@ -292,12 +328,35 @@ static void RenderBufferClear(RenderBuffer *rb)
     memset(rb->memory, 0, rb->memorySize);
 }
 
-static void RenderBufferDrawQuad(RenderBuffer *rb, s32 x, s32 y, s32 width, s32 height, u32 color)
+static void RenderBufferDrawCircle(RenderBuffer *rb, s32 x, s32 y, s32 radius, u32 color)
 {
-    s32 drawX = CONTAIN(x, 0, rb->width);
-    s32 drawY = CONTAIN(y, 0, rb->height);
-    u32 drawWidth = CONTAIN(x + width, 0, rb->width);
-    u32 drawHeight = CONTAIN(y + height, 0, rb->height);
+    s32 drawX = CONTAIN(x - radius, 0, rb->width);
+    s32 drawY = CONTAIN(y - radius, 0, rb->height);
+    u32 drawWidth = CONTAIN(x + radius, 0, rb->width);
+    u32 drawHeight = CONTAIN(y + radius, 0, rb->height);
+    for (s32 itY = drawY; itY < (s32)drawHeight; ++itY)
+    {
+        for (s32 itX = drawX; itX < (s32)drawWidth; ++itX)
+        {
+            v2f p, pNorm;
+            p.x = (f32)(itX - x) / radius;
+            p.y = (f32)(itY - y) / radius;
+            pNorm = v2fNormalize(p);
+            if (v2fLength(&p) <= v2fLength(&pNorm))
+            {
+                u32 *pixel = (u32 *)rb->memory + ((rb->width * itY) + itX);
+                *pixel = color;
+            }
+        }
+    }
+}
+
+static void RenderBufferDrawQuad(RenderBuffer *rb, s32 x, s32 y, s32 halfWidth, s32 halfHeight, u32 color)
+{
+    s32 drawX = CONTAIN(x - halfWidth, 0, rb->width);
+    s32 drawY = CONTAIN(y - halfHeight, 0, rb->height);
+    u32 drawWidth = CONTAIN(x + halfWidth, 0, rb->width);
+    u32 drawHeight = CONTAIN(y + halfHeight, 0, rb->height);
     for (u32 itY = drawY; itY < drawHeight; ++itY)
     {
         for (u32 itX = drawX; itX < drawWidth; ++itX)
@@ -307,42 +366,235 @@ static void RenderBufferDrawQuad(RenderBuffer *rb, s32 x, s32 y, s32 width, s32 
         }
     }
 }
+
+static void RenderBufferDrawQuadOutline(RenderBuffer *rb, s32 x, s32 y, s32 halfWidth, s32 halfHeight, u32 color, s32 thickness)
+{
+    // TODO: Remove corner overdraw ?
+    // TopBar:
+    RenderBufferDrawQuad(rb, x, y + halfHeight, halfWidth + thickness, thickness, color);
+    // RightBar:
+    RenderBufferDrawQuad(rb, x + halfWidth, y, thickness, halfHeight + thickness, color);
+    // BottomBar:
+    RenderBufferDrawQuad(rb, x, y - halfHeight, halfWidth + thickness, thickness, color);
+    // LeftBar:
+    RenderBufferDrawQuad(rb, x - halfWidth, y, thickness, halfHeight + thickness, color);
+}
+
+inline void Swap(s32 *a, s32 *b)
+{
+    s32 tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+inline void RenderBufferPlot(RenderBuffer *rb, s32 x, s32 y, f32 brightness, u32 color)
+{
+    if (x >= 0 && x < rb->width && y >= 0 && y < rb->height)
+        *((u32 *)rb->memory + y * rb->width + x) = (u32)(brightness * color);
+}
+
+inline f32 ipart(f32 x) { return (f32)floor(x); }
+inline f32 fpart(f32 x) { return x - (f32)floor(x); }
+inline f32 rfpart(f32 x) { return 1 - fpart(x); }
+
+// NOTE(pf): Based on: https://en.wikipedia.org/wiki/Xiaolin_Wu%27s_line_algorithm
+static void RenderBufferDrawLineAA(RenderBuffer *rb, s32 x0, s32 y0, s32 x1, s32 y1, u32 color)
+{
+    b32 steep = abs(y1 - y0) > abs(x1 - x0);
+
+    if (steep)
+    {
+        Swap(&x0, &y0);
+        Swap(&x1, &y1);
+    }
+
+    if (x0 > x1)
+    {
+        Swap(&x0, &x1);
+        Swap(&y0, &y1);
+    }
+
+    f32 dx = (f32)(x1 - x0);
+    f32 dy = (f32)(y1 - y0);
+
+    f32 gradient = 1.0f;
+    if (dx > EPSILON)
+    {
+        gradient = dy / dx;
+    }
+
+    // first endpoint.
+
+    f32 xend = (f32)round(x0);
+    f32 yend = y0 + gradient * (xend - x0);
+    f32 xgap = rfpart(x0 + 0.5f);
+    f32 xpxl1 = xend;
+    f32 ypxl1 = (f32)floor(yend);
+
+    if (steep)
+    {
+        RenderBufferPlot(rb, (s32)ypxl1, (s32)xpxl1, rfpart(yend) * xgap, color);
+        RenderBufferPlot(rb, (s32)ypxl1 + 1, (s32)xpxl1, fpart(yend) * xgap, color);
+    }
+    else
+    {
+        RenderBufferPlot(rb, (s32)xpxl1, (s32)ypxl1, rfpart(yend) * xgap, color);
+        RenderBufferPlot(rb, (s32)xpxl1, (s32)ypxl1 + 1, fpart(yend) * xgap, color);
+    }
+    f32 intery = yend + gradient;
+
+    xend = (f32)round(x1);
+    yend = y1 + gradient * (xend - x1);
+    xgap = fpart(x1 + 0.5f);
+    f32 xpxl2 = xend;
+    f32 ypxl2 = ipart(yend);
+
+    if (steep)
+    {
+        RenderBufferPlot(rb, (s32)ypxl2, (s32)xpxl2, rfpart(yend) * xgap, color);
+        RenderBufferPlot(rb, (s32)ypxl2 + 1, (s32)xpxl2, fpart(yend) * xgap, color);
+    }
+    else
+    {
+        RenderBufferPlot(rb, (s32)xpxl2, (s32)ypxl2, rfpart(yend) * xgap, color);
+        RenderBufferPlot(rb, (s32)xpxl2, (s32)ypxl2 + 1, rfpart(yend) * xgap, color);
+    }
+
+    // main loop
+    if (steep)
+    {
+        for (s32 x = (s32)xpxl1 + 1; x < xpxl2 - 1; ++x)
+        {
+            RenderBufferPlot(rb, (s32)ipart(intery), x, rfpart(intery), color);
+            RenderBufferPlot(rb, (s32)ipart(intery) + 1, x, fpart(intery), color);
+            intery += gradient;
+        }
+    }
+    else
+    {
+        for (s32 x = (s32)xpxl1 + 1; x < xpxl2 - 1; ++x)
+        {
+            RenderBufferPlot(rb, x, (s32)ipart(intery), rfpart(intery), color);
+            RenderBufferPlot(rb, x, (s32)ipart(intery) + 1, fpart(intery), color);
+            intery += gradient;
+        }
+    }
+}
+
 static void RenderBufferDrawEntity(RenderBuffer *rb, Entity *entity)
 {
-    RenderBufferDrawQuad(rb, (s32)entity->pos.x, (s32)entity->pos.y, (s32)entity->dim.x, (s32)entity->dim.y, entity->color);
+    switch (entity->collisionType)
+    {
+    case PLAYER:
+    {
+        f32 lineLength = 50.0f;
+        if (v2fLength(&entity->dir) > EPSILON)
+        {
+            v2f xy1 = v2fAdd(entity->pos, v2fMul(entity->dir, lineLength));
+            RenderBufferDrawLineAA(rb, (s32)entity->pos.x, (s32)entity->pos.y, (s32)xy1.x, (s32)xy1.y, RGB(255, 0, 0));
+        }
+
+        if (entity->invulnearableTimer_u > 0.0f)
+        {
+            f32 freq = 4.0f;
+            s32 blinking = (s32)(255 * MapIntoRange01F32((f32)cos(freq * entity->invulnearableTimer_u), -1, 1));
+            RenderBufferDrawQuadOutline(rb, (s32)entity->pos.x, (s32)entity->pos.y, (s32)entity->halfDim.x, (s32)entity->halfDim.y,
+                                        RGB(blinking, blinking, 0), 4);
+        }
+
+    } // LET IT FALL THROUGH!
+    case ASTEROID:
+    case ALIEN:
+    {
+        RenderBufferDrawQuad(rb, (s32)entity->pos.x, (s32)entity->pos.y, (s32)entity->halfDim.x, (s32)entity->halfDim.y, entity->color);
+    }
+    break;
+    case BULLET:
+    {
+        RenderBufferDrawCircle(rb, (s32)entity->pos.x, (s32)entity->pos.y, (s32)entity->halfDim.x, entity->color);
+    }
+    break;
+        INVALID_DEFAULT_CASE
+    }
+}
+
+static v2s GetTextDimensions(GameState *gameState, f32 txtScale, char *text)
+{
+    v2s result;
+    result.x = 0;
+    result.y = 0;
+    f32 pixelScale = stbtt_ScaleForPixelHeight(&gameState->font, txtScale);
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&gameState->font, &ascent, &descent, &lineGap);
+    result.y = ascent + descent + lineGap;
+    while (*text)
+    {
+        int advance;
+        char c = *text;
+        int w, h;
+        unsigned char *bitmap = stbtt_GetCodepointBitmap(&gameState->font, 0,
+                                                         pixelScale, c, &w, &h, 0, 0);
+        // .. kerning relative to other characters in the text.
+        stbtt_GetCodepointHMetrics(&gameState->font, c, &advance, 0);
+        result.x += advance;
+        if (c)
+        {
+            result.x += (s32)(stbtt_GetCodepointKernAdvance(&gameState->font, c, *(text + 1)));
+        }
+        ++text;
+    }
+
+    result = v2sMul(result, pixelScale);
+    return result;
 }
 
 static void RenderBufferDrawText(RenderBuffer *rb, s32 x, s32 y, GameState *gameState,
-                                 f32 s, u32 color, char *text)
+                                 f32 txtScale, u32 color, char *text)
 {
-    // TODO: Bounds checking.
-    f32 xpos = 0.0f;
-    while(*text)
+    f32 pixelScale = stbtt_ScaleForPixelHeight(&gameState->font, txtScale);
+    while (*text)
     {
-        int advance, lsb;
-        u32 *bb = ((u32*)gameState->rb->memory) + (rb->width * y) + x + ((u32)floor(xpos));
+        int advance, offsetX, offsetY, drawY, drawX;
         char c = *text;
-        int w,h,i,j;
-        f32 pixelScale = stbtt_ScaleForPixelHeight(&gameState->font, s);
+        int w, h, i, j;
         unsigned char *bitmap = stbtt_GetCodepointBitmap(&gameState->font, 0,
-                                                         pixelScale, c, &w, &h, 0,0);
-        for (j=h - 1; j >= 0; --j)
+                                                         pixelScale, c, &w, &h, &offsetX, &offsetY);
+        offsetY += h;
+        drawX = CONTAIN(offsetX + x, 0, rb->width);
+        drawY = CONTAIN(y - offsetY, 0, rb->height);
+        u32 *drawPtr = ((u32 *)gameState->rb->memory) + (drawY * gameState->rb->width) + drawX;
+
+        // NOTE: We are mapping glyphs into our buffer, bounds check
+        // in for are for glyph map, we need extra guards within for
+        // our drawbuffer.
+        for (j = h - 1;
+             j >= 0 && drawY < rb->height;
+             --j, ++drawY)
         {
-            for (i=0; i < w; ++i)
+            for (i = 0;
+                 (i < w) && drawX < rb->width;
+                 ++i, ++drawX)
             {
-                if(bitmap[j*w + i])
+                if (bitmap[j * w + i])
                 {
-                    *(bb + i) = color;
+                    *(drawPtr + i) = color;
                 }
             }
-            bb += gameState->rb->width;
+            drawX -= i;
+            drawPtr += gameState->rb->width;
         }
-        float subScale = pixelScale;
-        float x_shift = xpos - (float) floor(xpos);
-        stbtt_GetCodepointHMetrics(&gameState->font, c, &advance, &lsb);
-        xpos += (advance * subScale);
+
+        // .. kerning relative to other characters in the text.
+        stbtt_GetCodepointHMetrics(&gameState->font, c, &advance, 0);
+        x += (s32)(advance * pixelScale);
         if (c)
-            xpos += subScale*stbtt_GetCodepointKernAdvance(&gameState->font, c, *(text + 1));
+        {
+            x += (s32)(pixelScale * stbtt_GetCodepointKernAdvance(&gameState->font, c, *(text + 1)));
+        }
+
+        if (x >= rb->width)
+            break;
+
         ++text;
     }
 }
@@ -366,23 +618,23 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 {
     switch (uMsg)
     {
-        case WM_KEYUP:
-        {
-            keyStates[(u8)(wParam)].currState = KS_UP;
-        }
+    case WM_KEYUP:
+    {
+        keyStates[(u8)(wParam)].currState = KS_UP;
+    }
+    break;
+    case WM_KEYDOWN:
+    {
+        keyStates[(u8)(wParam)].currState = KS_DOWN;
+    }
+    break;
+    case WM_DESTROY:
+    {
+        PostQuitMessage(0);
+    }
+    break;
+    default:
         break;
-        case WM_KEYDOWN:
-        {
-            keyStates[(u8)(wParam)].currState = KS_DOWN;
-        }
-        break;
-        case WM_DESTROY:
-        {
-            PostQuitMessage(0);
-        }
-        break;
-        default:
-            break;
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -403,20 +655,23 @@ static inline u64 Win32QueryPerformanceFrequency()
 
 static void GameMenuLogic(GameState *gameState)
 {
-    if(KeyStatePressed(keyStates, 'P'))
+    if (KeyStatePressed(keyStates, 'P'))
     {
-        gameState->mode = GAME_SETUP;
+        gameState->mode = GS_GAME_SETUP;
     }
     else
     {
-        RenderBufferDrawText(gameState->rb, (s32)(gameState->screenDim.x / 2.0f) - 400,
-                             (s32)(gameState->screenDim.y / 2.0f),
+        f32 txtScale = 100;
+        v2s txtDim = GetTextDimensions(gameState, txtScale, "START MENU");
+        RenderBufferDrawText(gameState->rb, (s32)((gameState->screenDim.x / 2.0f) - (txtDim.x / 2.0f)),
+                             (s32)(gameState->screenDim.y / 1.0f) - 100,
                              gameState,
-                             100, RGB(255, 255, 0), "START MENU");
-        RenderBufferDrawText(gameState->rb, (s32)(gameState->screenDim.x / 2.0f) - 400,
-                             (s32)(gameState->screenDim.y / 2.0f) + 100,
+                             txtScale, RGB(255, 255, 0), "START MENU");
+        txtDim = GetTextDimensions(gameState, txtScale, "PRESS (P) to Play");
+        RenderBufferDrawText(gameState->rb, (s32)((gameState->screenDim.x / 2.0f) - (txtDim.x / 2.0f)),
+                             (s32)(gameState->screenDim.y / 1.0f) - 100 - txtDim.y,
                              gameState,
-                             100, RGB(255, 255, 0), "PRESS (P) to Play");
+                             txtScale, RGB(255, 255, 0), "PRESS (P) to Play");
     }
 }
 
@@ -428,52 +683,45 @@ static void GameLogic(GameState *gameState)
     RenderBuffer *rb = gameState->rb;
     v2s screenDim = gameState->screenDim;
     HWND hwnd = gameState->hwnd;
-    
-    v2f minPos = {-50.0f + (screenDim.x / 2.f), -50.0f + (screenDim.y / 2.f)};
-    v2f maxPos = {50.0f + (screenDim.x / 2.f), 50.0f + (screenDim.y / 2.f)};
-    v2f dim = {50, 50};
-    
-    if(gameState->mode == GAME_SETUP)
+
+    v2f center = {screenDim.x / 2.f, screenDim.y / 2.f};
+    v2f minPos = {0.0f, 0.0f};
+    v2f maxPos = {(f32)screenDim.x, (f32)screenDim.y};
+    v2f asteroidDim = {30, 30};
+
+    if (gameState->mode == GS_GAME_SETUP)
     {
-        gameState->mode = GAME;
+        gameState->mode = GS_GAME;
         gameState->score = 0;
         gameState->asteroidCount = 0;
-        gameState->asteroidMaxCount = 25;
-        gameState->asteroidSpawnTimer = RandomF32Between(1.0f, 3.0f);
+        gameState->asteroidMaxCount = 5;
+        gameState->asteroidSpawnTimer = RandomF32Between(2.0f, 5.0f);
         gameState->freeList = 0;
         gameState->activeEntityList = 0;
         gameState->entityCount = 0;
-        gameState->player = EntityCreate(gameState, RGB(255, 255, 255),
-                                         RandomPositionBetween(minPos, maxPos),
-                                         RandomDimensionBetween(dim, dim),
-                                         ASTEROID | ALIEN, PLAYER);
+        gameState->player = PlayerCreate(gameState, center);
     }
     else
     {
         // Game Paused.
-        if(KeyStatePressed(keyStates, 'P'))
-        {   
-            gameState->mode = PAUSED;
+        if (KeyStatePressed(keyStates, 'P'))
+        {
+            gameState->mode = GS_PAUSED;
         }
 
-        if(gameState->asteroidCount < gameState->asteroidMaxCount)
+        if (gameState->asteroidCount < gameState->asteroidMaxCount)
         {
             gameState->asteroidSpawnTimer -= frameDt;
-            if(gameState->asteroidSpawnTimer <= 0.0f)
+            if (gameState->asteroidSpawnTimer <= 0.0f)
             {
-                Entity *asteroid = EntityCreate(gameState,
-                                                RandomColorBetween(64, 64, 64, 192, 192, 192),
-                                                RandomPositionBetween(minPos, maxPos),
-                                                RandomDimensionBetween(dim, dim),
-                                                BULLET, ASTEROID);
-                v2f minVel = {-2.f, -2.f};
-                v2f maxVel = {2.0f, 2.0f};
-                asteroid->dP = RandomV2fBetween(minVel, maxVel);
-                gameState->asteroidSpawnTimer = RandomF32Between(0.5f, 2.5f);
-                gameState->asteroidCount++;
+                AsteroidCreate(gameState, RandomV2fBetween(minPos, maxPos), asteroidDim, AS_BIG);
+                gameState->asteroidSpawnTimer = RandomF32Between(2.0f, 5.0f);
             }
         }
-        
+
+        // TODO: AlienZ.
+        // if(gameState->alienCount < gameState->asteroidCount
+
         v2f ddP = {0, 0};
         if (KeyStateDown(keyStates, VK_LEFT))
         {
@@ -492,19 +740,23 @@ static void GameLogic(GameState *gameState)
             ddP.y -= 1.0f;
         }
 
-        if(KeyStateDown(keyStates, VK_SPACE))
+        if (KeyStatePressed(keyStates, VK_SPACE))
         {
-            // TODO:
+            f32 bulletSpeed = 10.0f;
+            v2f bulletHalfDim = {5.0f, 5.0f};
+            v2f spawnPos = v2fAdd(player->pos, v2fHadamard(v2fMul(player->halfDim, 0.5f), player->dir));
+            Entity *bullet = EntityCreate(gameState, RGB(0, 255, 0), spawnPos, bulletHalfDim, ASTEROID | ALIEN, BULLET, bulletSpeed);
+            bullet->dP = v2fAdd(bullet->dP, v2fMul(player->dir, bulletSpeed));
         }
 
         if (!v2fIsZero(&ddP))
         {
-            v2fNormalize(&ddP);
+            v2fNormalized(&ddP);
             player->dP = v2fAdd(player->dP, ddP);
         }
 
         v2f dPDrag = player->dP;
-        v2fNormalize(&dPDrag);
+        v2fNormalized(&dPDrag);
         dPDrag = v2fMul(dPDrag, -0.2f);
         if (v2fMagnitude(&player->dP) > v2fMagnitude(&dPDrag))
         {
@@ -516,68 +768,103 @@ static void GameLogic(GameState *gameState)
             player->dP.y = 0.0f;
         }
 
-        for(Entity *entity = gameState->activeEntityList;
-            entity;
-            entity = entity->next)
+        for (Entity *entity = gameState->activeEntityList;
+             entity;
+             entity = entity->next)
         {
+            v2fContain(&entity->dP, v2fMul(v2fONE, -entity->maxVel), v2fMul(v2fONE, entity->maxVel));
             entity->pos = v2fAdd(entity->pos, entity->dP);
-            Entity *collider = EntityCollidesWithAnything(entity, gameState->activeEntityList);
-            if(collider)
+            if (!v2fIsZero(&entity->dP))
             {
-                --entity->health;
-                if(entity->health <= 0)
-                {
+                entity->dir = entity->dP;
+                v2fNormalized(&entity->dir);
+            }
 
-                    switch(entity->collisionType)
+            Entity *collider = EntityCollidesWithAnything(entity, gameState->activeEntityList);
+            if (collider)
+            {
+                if (entity->invulnearableTimer_u <= 0.0f)
+                    --entity->health;
+
+                switch (entity->collisionType)
+                {
+                case ASTEROID:
+                {
+                    if (entity->stage == AS_BIG)
                     {
-                        case ASTEROID:
-                        {
-                            // TODO: Break into smaller chunks                            
-                            --gameState->asteroidCount;
-                            EntityFree(entity, gameState);
-                            continue;
-                        } break;
-                        case BULLET:
-                        {
-                            ++gameState->score;
-                        } break;
-                        case PLAYER:
-                        {
-                            gameState->mode = GAME_OVER;
-                        } break;
-                        INVALID_DEFAULT_CASE
+                        AsteroidCreate(gameState, entity->pos, v2fMul(entity->halfDim, 0.5f), AS_SMALL);
+                        AsteroidCreate(gameState, entity->pos, v2fMul(entity->halfDim, 0.5f), AS_SMALL);
+                    }
+
+                    EntityFree(entity, gameState);
+                    --gameState->asteroidCount;
+                    if (collider->collisionType == BULLET)
+                    {
+                        ++gameState->score;
+                        EntityFree(collider, gameState);
+                    }
+                    continue;
+                }
+                break;
+                case PLAYER:
+                {
+                    if (entity->health <= 0)
+                    {
+                        gameState->mode = GS_GAME_OVER;
+                    }
+                    else
+                    {
+                        entity->invulnearableTimer_u = (f32)PI * 2.f;
                     }
                 }
+                break;
+                default:
+                {
+                    // Do nothing.
+                }
+                break;
+                }
             }
-        
+
+            // MAP / RENDER...
             EntityWrapToWorld(entity, 0, 0, screenDim.x, screenDim.y);
             RenderBufferDrawEntity(rb, entity);
-
-            if(entity->collisionType == PLAYER)
+            // .. Check lifetime, this could have been an entity type param specifics, i.e polymorphism..
+            entity->lifeTime_u -= frameDt;
+            if (entity->collisionType == BULLET && entity->lifeTime_u <= 0.0f)
             {
-                RenderBufferDrawQuad(rb, (s32)entity->pos.x, (s32)entity->pos.y, 20, 20, RGB(255, 0, 0));
+                EntityFree(entity, gameState);
+            }
+            else if (entity->invulnearableTimer_u < 0.0f)
+            {
+                entity->invulnearableTimer_u = 0.0f;
             }
         }
 
+        f32 txtScale = 40.0f;
         char txt[256];
         sprintf(txt, "SCORE: %u", gameState->score);
-        RenderBufferDrawText(gameState->rb, 0, 0, gameState, 40.0f, RGB(0, 255, 0), txt);
+        RenderBufferDrawText(gameState->rb, 0, 0, gameState, txtScale, RGB(0, 255, 0), txt);
+
+        v2s dims = GetTextDimensions(gameState, txtScale, txt);
+        sprintf(txt, "HEALTH: %u", player->health);
+        RenderBufferDrawText(gameState->rb, 0, dims.y, gameState, txtScale, RGB(0, 255, 0), txt);
     }
 }
 
 static void GamePausedLogic(GameState *gameState)
 {
-    if(KeyStatePressed(keyStates, 'P'))
-    {   
-        gameState->mode = GAME;
+    if (KeyStatePressed(keyStates, 'P'))
+    {
+        gameState->mode = GS_GAME;
     }
 }
 
 static void GameOverLogic(GameState *gameState)
 {
-    if(KeyStatePressed(keyStates, 'C'))
+    if (KeyStatePressed(keyStates, 'C'))
     {
-        gameState->mode = MENU;
+        gameState->mode = GS_MENU;
     }
     else
     {
@@ -619,7 +906,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         NULL,      // Menu
         hInstance, // Instance handle
         NULL       // Additional application data
-                               );
+    );
 
     if (hwnd == NULL)
     {
@@ -634,7 +921,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     f64 targetMS = 1.0f / 60.f;
     start = (f64)Win32QueryPerformanceCounter();
     frequency = (f64)Win32QueryPerformanceFrequency();
-    
+
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
     WINDOWINFO wi;
@@ -662,7 +949,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     v2f minPos = {-50.0f + (rb.width / 2.f), -50.0f + (rb.height / 2.f)};
     v2f maxPos = {50.0f + (rb.width / 2.f), 50.0f + (rb.height / 2.f)};
     v2f dim = {50, 50};
-    
+
     b32 isRunning = 1;
     GameState gameState;
     gameState.frameDt = 0.0f;
@@ -670,14 +957,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     gameState.screenDim.x = rb.width;
     gameState.screenDim.y = rb.height;
     gameState.hwnd = hwnd;
-    gameState.mode = MENU;
+    gameState.mode = GS_MENU;
     gameState.entityList = entityList;
 
-    char *ttf_buffer = malloc(sizeof(char) * 1<<25);
-    fread(ttf_buffer, 1, 1<<25, fopen("c:/windows/fonts/arial.ttf", "rb"));
-    stbtt_InitFont(&gameState.font, ttf_buffer, stbtt_GetFontOffsetForIndex(ttf_buffer,0));
-    
-    
+    char *ttf_buffer = malloc(sizeof(char) * 1 << 25);
+    fread(ttf_buffer, 1, 1 << 25, fopen("c:/windows/fonts/arial.ttf", "rb"));
+    stbtt_InitFont(&gameState.font, ttf_buffer, stbtt_GetFontOffsetForIndex(ttf_buffer, 0));
+
     // GAME LOOP :
     char *text = "GAME ENGINE!!";
     while (isRunning)
@@ -696,42 +982,49 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         }
 
         // LOGIC:
-        switch (gameState.mode) {
+        switch (gameState.mode)
+        {
 
-            case MENU:
-            {
-                GameMenuLogic(&gameState);
-            }break;
+        case GS_MENU:
+        {
+            GameMenuLogic(&gameState);
+        }
+        break;
 
-            case GAME_SETUP:
-            case GAME:
-            {
-                GameLogic(&gameState);
-            }break;
+        case GS_GAME_SETUP:
+        case GS_GAME:
+        {
+            GameLogic(&gameState);
+        }
+        break;
 
-            case PAUSED:
-            {
-                GamePausedLogic(&gameState);
-            }break;
+        case GS_PAUSED:
+        {
+            GamePausedLogic(&gameState);
+        }
+        break;
 
-            case GAME_OVER:
-            {
-                GameOverLogic(&gameState);
-            }break;
-            default:
-            {
-                ASSERT(0);
-            }break;
+        case GS_GAME_OVER:
+        {
+            GameOverLogic(&gameState);
+        }
+        break;
+        default:
+        {
+            ASSERT(0);
+        }
+        break;
         }
 
         // RENDER :
-        int lines = StretchDIBits(GetDC(hwnd), 0, 0, gameState.screenDim.x, gameState.screenDim.y,
-                                  0, 0, gameState.screenDim.x, gameState.screenDim.y,
-                                  gameState.rb->memory, &gameState.rb->bitsInfo,
-                                  DIB_RGB_COLORS, SRCCOPY);
-        RenderBufferClear(gameState.rb);
-
-    
+        if(gameState.mode != GS_PAUSED)
+        {
+            int lines = StretchDIBits(GetDC(hwnd), 0, 0, gameState.screenDim.x, gameState.screenDim.y,
+                                        0, 0, gameState.screenDim.x, gameState.screenDim.y,
+                                        gameState.rb->memory, &gameState.rb->bitsInfo,
+                                        DIB_RGB_COLORS, SRCCOPY);
+            RenderBufferClear(gameState.rb);
+        }
         for (int i = 0; i < ARRAY_COUNT(keyStates); ++i)
         {
             keyStates[i].prevState = keyStates[i].currState;

@@ -25,9 +25,9 @@
         return result;                                                  \
     }                                                                   \
                                                                         \
-    inline static v2##postfix v2##postfix##Mul(v2##postfix a, type value) \
+    inline static v2##postfix v2##postfix##Mul(v2##postfix a, f32 value) \
     {                                                                   \
-        v2##postfix result = {a.x * value, a.y * value};                \
+        v2##postfix result = {(type)(a.x * value), (type)(a.y * value)}; \
         return result;                                                  \
     }                                                                   \
                                                                         \
@@ -56,7 +56,7 @@ inline static f32 v2fLength(v2f *src)
     return (f32)sqrt(src->x * src->x + src->y * src->y);
 }
 
-inline static void v2fNormalize(v2f *src)
+inline static void v2fNormalized(v2f *src)
 {
     f32 length = v2fLength(src);
     if (length > EPSILON)
@@ -66,5 +66,30 @@ inline static void v2fNormalize(v2f *src)
     }
 }
 
+inline static void v2fContain(v2f *src, v2f min, v2f max)
+{
+    src->x = CONTAIN(src->x, min.x, max.x);
+    src->y = CONTAIN(src->y, min.y, max.y);
+}
+
+inline static v2f v2fNormalize(v2f src)
+{
+    v2f result = src;
+    f32 length = v2fLength(&result);
+    if (length > EPSILON)
+    {
+        result.x /= length;
+        result.y /= length;
+    }
+    return result;
+}
+
+static v2f v2fZERO;
+static v2f v2fONE = {1, 1};
+
+inline static f32 MapIntoRange01F32(f32 x, f32 min, f32 max)
+{
+    return (x - min) / (max - min);
+}
 
 #endif
