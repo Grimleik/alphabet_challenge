@@ -54,4 +54,4 @@ dkms.conf
 # Directories
 tmp/
 build/
-.vs/
+.vs*/
