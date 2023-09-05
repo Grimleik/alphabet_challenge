@@ -1,0 +1,30 @@
+TODO:
+- AGE:
+    Sound Support.
+        - FMOD Baby!
+    Font:
+        - Anchor Points.
+    OpenGL.
+    
+- Breakout:
+    * Gameplay:
+        * PowerUps:
+            - Extra life.
+            - Dash.
+            - Extended Paddle.
+            - More balls (if those enter the nono zone no life is lost).
+    * UI.
+        - Menus.
+    * Cleanup
+        - Look into generalizing entities, paddle, ball ,boxes.
+        - Can we introduce the sentinel/cyclic dll outside the objects ?
+    * Bugs:
+        - Collision, can intersect player paddle with ball.
+    
+- MemoryManagementUnit.
+- RenderGroup concept.
+    - Store info. concerning independant rend.
+    - TODO: Ortho/Projective option.
+
+
+Move a camera, zoom, mouse input width meterstopixels.
